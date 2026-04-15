@@ -22,7 +22,7 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() *Config {
 	cfg := &Config{
-		Host:       getEnv("QUERY_API_HOST", "127.0.0.1"),
+		Host:       getEnv("QUERY_API_HOST", "0.0.0.0"),
 		Port:       getEnvInt("QUERY_API_PORT", 8081),
 		DBPath:     getEnv("DB_PATH", "../whatssapBot/whatsapp_bot.db"),
 		LLMBaseURL: getEnv("LLM_BASE_URL", "http://localhost:1234"),

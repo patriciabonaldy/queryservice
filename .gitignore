@@ -1,0 +1,13 @@
+# Database files
+*.db
+
+# Binaries
+queryservice
+*.exe
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
