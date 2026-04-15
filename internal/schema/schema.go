@@ -1,9 +1,14 @@
 package schema
 
+import (
+	"fmt"
+	"time"
+)
+
 // AllowedTables defines which tables can be queried and their allowed fields
 var AllowedTables = map[string][]string{
 	"welcome_logs": {
-		"id", "user_phone", "chat_name", "sent_at",
+		"id", "user_phone", "chat_name", "sent_at", "message_id",
 	},
 	"command_logs": {
 		"id", "user_phone", "command", "chat_name", "executed_at",
@@ -13,7 +18,7 @@ var AllowedTables = map[string][]string{
 	},
 	"scam_alerts": {
 		"id", "message_id", "user_phone", "chat_name", "message_text",
-		"keywords", "detected_at", "action_taken", "executed_at",
+		"keywords", "detected_at", "action_taken",
 	},
 	"cached_events": {
 		"id", "event_id", "title", "url", "date_time", "group_name", "cached_at",
@@ -23,6 +28,12 @@ var AllowedTables = map[string][]string{
 	},
 	"audit_logs": {
 		"id", "action", "chat_name", "user_phone", "details", "timestamp",
+	},
+	"walk_reviews": {
+		"id", "walk_name", "walk_date", "route_description", "places_visited",
+		"cafe_restaurant", "places_to_eat_nearby", "transportation",
+		"path_conditions", "additional_notes", "organizer_name",
+		"contributors", "chat_name", "created_at", "updated_at",
 	},
 }
 
@@ -43,109 +54,46 @@ var AllowedAggregations = []string{"count", "sum", "avg", "min", "max"}
 
 // GetSchemaPrompt returns the system prompt with database schema for the LLM
 func GetSchemaPrompt() string {
-	return `You are a database query planner for a WhatsApp bot. Generate ONLY valid JSON query plans.
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	weekday := now.Weekday()
+	// Monday=1 .. Sunday=7; time.Weekday: Sunday=0, Monday=1 .. Saturday=6
+	daysSinceMonday := int(weekday) - 1
+	if daysSinceMonday < 0 {
+		daysSinceMonday = 6 // Sunday
+	}
+	mondayDate := now.AddDate(0, 0, -daysSinceMonday).Format("2006-01-02")
 
-You understand questions in ENGLISH, SPANISH, and PORTUGUESE.
+	return fmt.Sprintf(`You are a JSON query planner. Output ONLY a single JSON object, no text, no explanation, no thinking.
 
-DATABASE SCHEMA:
-================
+TODAY: %s (%s). This week started on Monday %s.
 
-1. welcome_logs - Tracks welcome messages sent to new members
-   - id (INTEGER): Primary key
-   - user_phone (TEXT): User's phone number
-   - chat_name (TEXT): Group where welcome was sent
-   - sent_at (TIMESTAMP): When the welcome was sent
+TABLES (name — purpose: columns):
+welcome_logs — new members who joined/were welcomed: id, user_phone, chat_name, sent_at, message_id
+command_logs — bot command executions (/calendar, /review, etc): id, user_phone, command, chat_name, executed_at
+processed_messages — message deduplication tracking: id, message_id, chat_name, user_phone, command, processed_at
+scam_alerts — detected spam/scam messages: id, message_id, user_phone, chat_name, message_text, keywords, detected_at, action_taken
+walk_reviews — walking event reviews: id, walk_name, walk_date, route_description, places_visited, cafe_restaurant, places_to_eat_nearby, transportation, path_conditions, additional_notes, organizer_name, contributors, chat_name, created_at, updated_at
+cached_events — cached Meetup events: id, event_id, title, url, date_time, group_name, cached_at
+group_configs — group settings: chat_name, admins, spam_keywords, rate_limit, features, updated_at
+audit_logs — action audit trail: id, action, chat_name, user_phone, details, timestamp
 
-2. command_logs - Logs command executions
-   - id (INTEGER): Primary key
-   - user_phone (TEXT): User who executed the command
-   - command (TEXT): Command name (e.g., /calendar, /stats, llm_query)
-   - chat_name (TEXT): Group where executed
-   - executed_at (TIMESTAMP): Execution time
+FORMAT: {"operation":"select","table":"...","fields":["..."],"filters":[{"field":"...","op":"eq|ne|gt|lt|gte|lte|like|in","value":"..."}],"aggregations":[{"type":"count|sum|avg|min|max","field":"...","alias":"..."}],"group_by":["..."],"order_by":{"field":"...","direction":"asc|desc"},"limit":10}
 
-3. processed_messages - Tracks processed messages to avoid duplicates
-   - id (INTEGER): Primary key
-   - message_id (TEXT): Unique message identifier
-   - chat_name (TEXT): Group name
-   - user_phone (TEXT): Sender phone
-   - command (TEXT): Command if applicable
-   - processed_at (TIMESTAMP): Processing time
+RULES: operation must be "select". limit 1-100 (default 10). Date filters: use absolute dates (e.g. "%s") when the user says "this week/month", use relative formats ("-7 days", "-1 month", "-24 hours") for "last week/month". "This week" means from Monday of the current week. Use "like" with %% for partial match. For "in", value is an array. For counting use aggregations with count/*.
 
-4. scam_alerts - Records detected spam/scam messages
-   - id (INTEGER): Primary key
-   - message_id (TEXT): Message identifier
-   - user_phone (TEXT): Offending user's phone
-   - chat_name (TEXT): Group name
-   - message_text (TEXT): The suspicious message content
-   - keywords (TEXT): JSON array of matched spam keywords
-   - detected_at (TIMESTAMP): Detection time
-   - action_taken (TEXT): What action was taken (e.g., "admin_alerted")
+EXAMPLES:
+Q: "How many welcome messages were sent last week?"
+A: {"operation":"select","table":"welcome_logs","aggregations":[{"type":"count","field":"*","alias":"total"}],"filters":[{"field":"sent_at","op":"gte","value":"-7 days"}],"limit":1}
 
-5. cached_events - Cached Meetup events
-   - id (INTEGER): Primary key
-   - event_id (TEXT): Meetup event ID
-   - title (TEXT): Event title
-   - url (TEXT): Event URL
-   - date_time (TIMESTAMP): Event date/time
-   - group_name (TEXT): Meetup group name
-   - cached_at (TIMESTAMP): When cached
+Q: "How many times was /calendar executed this week?"
+A: {"operation":"select","table":"command_logs","aggregations":[{"type":"count","field":"*","alias":"total"}],"filters":[{"field":"command","op":"eq","value":"/calendar"},{"field":"executed_at","op":"gte","value":"%s"}],"limit":1}`, today, weekday.String(), mondayDate, mondayDate, mondayDate) + `
 
-6. group_configs - Group configuration settings
-   - chat_name (TEXT): Primary key, group name
-   - admins (TEXT): JSON array of admin names
-   - spam_keywords (TEXT): JSON array of spam keywords
-   - rate_limit (INTEGER): Rate limit in minutes
-   - features (TEXT): JSON feature flags
-   - updated_at (TIMESTAMP): Last update time
+Q: "Who used /review last month?"
+A: {"operation":"select","table":"command_logs","fields":["user_phone","chat_name","executed_at"],"filters":[{"field":"command","op":"eq","value":"/review"},{"field":"executed_at","op":"gte","value":"-1 month"}],"order_by":{"field":"executed_at","direction":"desc"},"limit":10}
 
-7. audit_logs - Action audit trail
-   - id (INTEGER): Primary key
-   - action (TEXT): Action type (e.g., "llm_toggle", "query_command")
-   - chat_name (TEXT): Related group
-   - user_phone (TEXT): Related user
-   - details (TEXT): Action details
-   - timestamp (TIMESTAMP): When action occurred
-
-QUERY PLAN FORMAT:
-==================
-{
-  "operation": "select",
-  "table": "table_name",
-  "fields": ["field1", "field2"],
-  "filters": [{"field": "column", "op": "eq|ne|gt|lt|gte|lte|like|in", "value": "..."}],
-  "aggregations": [{"type": "count|sum|avg|min|max", "field": "*|column", "alias": "name"}],
-  "group_by": ["field1"],
-  "order_by": {"field": "column", "direction": "asc|desc"},
-  "limit": 10
-}
-
-RULES:
-======
-- operation MUST be "select" (only read operations allowed)
-- limit MUST be between 1 and 100 (default to 10 if not specified)
-- For date filters, use relative formats: "-7 days", "-1 month", "-24 hours", "-1 year"
-- Use "like" operator with % wildcards for partial matching (e.g., "%keyword%")
-- Always include a limit
-- For "in" operator, value must be an array
-- If the question asks for "top N" or "last N", use ORDER BY with LIMIT
-- For counting, use aggregations with type "count" and field "*"
-
-EXAMPLE QUESTIONS AND PLANS:
-============================
-
-Question: "How many welcome messages were sent last week?"
-Plan: {"operation":"select","table":"welcome_logs","aggregations":[{"type":"count","field":"*","alias":"total"}],"filters":[{"field":"sent_at","op":"gte","value":"-7 days"}],"limit":1}
-
-Question: "¿Cuáles son los 5 usuarios con más alertas de spam?"
-Plan: {"operation":"select","table":"scam_alerts","fields":["user_phone"],"aggregations":[{"type":"count","field":"*","alias":"alert_count"}],"group_by":["user_phone"],"order_by":{"field":"alert_count","direction":"desc"},"limit":5}
-
-Question: "Show me the last 10 commands executed"
-Plan: {"operation":"select","table":"command_logs","fields":["user_phone","command","chat_name","executed_at"],"order_by":{"field":"executed_at","direction":"desc"},"limit":10}
-
-Question: "¿Cuántos comandos /calendar se ejecutaron?"
-Plan: {"operation":"select","table":"command_logs","aggregations":[{"type":"count","field":"*","alias":"total"}],"filters":[{"field":"command","op":"eq","value":"/calendar"}],"limit":1}
-
-RESPOND WITH ONLY THE JSON QUERY PLAN, NO EXPLANATION OR ADDITIONAL TEXT.`
+Q: "Show me the last 10 commands executed"
+A: {"operation":"select","table":"command_logs","fields":["user_phone","command","chat_name","executed_at"],"order_by":{"field":"executed_at","direction":"desc"},"limit":10}`
 }
 
 // Contains checks if a string is in a slice

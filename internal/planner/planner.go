@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ func New(llmBaseURL, llmModel string) *Planner {
 // GenerateQueryPlan asks the LLM to generate a query plan from natural language
 func (p *Planner) GenerateQueryPlan(ctx context.Context, question string) (*QueryPlan, error) {
 	systemPrompt := schema.GetSchemaPrompt()
+	enrichedQuestion := enrichQuestion(question)
 
 	messages := []LLMMessage{
 		{
@@ -43,14 +45,14 @@ func (p *Planner) GenerateQueryPlan(ctx context.Context, question string) (*Quer
 		},
 		{
 			Role:    "user",
-			Content: question,
+			Content: enrichedQuestion,
 		},
 	}
 
 	request := LLMRequest{
 		Model:       p.llmModel,
 		Messages:    messages,
-		Temperature: 0.1,
+		Temperature: 0,
 		MaxTokens:   500,
 		Stream:      false,
 	}
@@ -124,7 +126,49 @@ func extractJSON(content string) string {
 		}
 	}
 
-	// Find the first { and last }
+	// Find a valid top-level JSON object by matching balanced braces.
+	// This handles cases where the LLM emits thinking/reasoning text
+	// before or around the actual JSON query plan.
+	for i := 0; i < len(content); i++ {
+		if content[i] == '{' {
+			depth := 0
+			inString := false
+			escaped := false
+			for j := i; j < len(content); j++ {
+				ch := content[j]
+				if escaped {
+					escaped = false
+					continue
+				}
+				if ch == '\\' && inString {
+					escaped = true
+					continue
+				}
+				if ch == '"' {
+					inString = !inString
+					continue
+				}
+				if inString {
+					continue
+				}
+				if ch == '{' {
+					depth++
+				} else if ch == '}' {
+					depth--
+					if depth == 0 {
+						candidate := content[i : j+1]
+						// Verify it's valid JSON with expected fields
+						if strings.Contains(candidate, "\"operation\"") || strings.Contains(candidate, "\"table\"") {
+							return strings.TrimSpace(candidate)
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: first { to last }
 	start := strings.Index(content, "{")
 	end := strings.LastIndex(content, "}")
 
@@ -206,6 +250,53 @@ func normalizeText(text string) string {
 	}
 
 	return result.String()
+}
+
+var commandRegex = regexp.MustCompile(`['\"]?(/\w+)['\"]?`)
+
+// enrichQuestion appends explicit hints extracted from the user's question
+// so the LLM doesn't miss key filters like command names or date boundaries.
+func enrichQuestion(question string) string {
+	var hints []string
+
+	// Extract command names like /calendar, /review
+	if matches := commandRegex.FindStringSubmatch(question); len(matches) > 1 {
+		hints = append(hints, fmt.Sprintf("IMPORTANT: filter by command = \"%s\"", matches[1]))
+	}
+
+	lower := strings.ToLower(question)
+
+	// Detect counting questions
+	countPatterns := []string{"how many", "cuantos", "cuantas", "quantos", "quantas", "count"}
+	for _, p := range countPatterns {
+		if strings.Contains(lower, p) {
+			hints = append(hints, "IMPORTANT: use aggregations with count(*) and alias \"total\", set limit to 1")
+			break
+		}
+	}
+
+	// Resolve "this week" / "esta semana" to absolute Monday date
+	if strings.Contains(lower, "this week") || strings.Contains(lower, "esta semana") {
+		now := time.Now()
+		daysSinceMonday := int(now.Weekday()) - 1
+		if daysSinceMonday < 0 {
+			daysSinceMonday = 6
+		}
+		monday := now.AddDate(0, 0, -daysSinceMonday).Format("2006-01-02")
+		hints = append(hints, fmt.Sprintf("IMPORTANT: \"this week\" means the timestamp field >= \"%s\" (use the appropriate date/timestamp column for the table)", monday))
+	} else if strings.Contains(lower, "this month") || strings.Contains(lower, "este mes") {
+		firstOfMonth := time.Now().Format("2006-01") + "-01"
+		hints = append(hints, fmt.Sprintf("IMPORTANT: \"this month\" means >= \"%s\"", firstOfMonth))
+	} else if strings.Contains(lower, "today") || strings.Contains(lower, "hoy") || strings.Contains(lower, "hoje") {
+		today := time.Now().Format("2006-01-02")
+		hints = append(hints, fmt.Sprintf("IMPORTANT: \"today\" means >= \"%s\"", today))
+	}
+
+	if len(hints) == 0 {
+		return question
+	}
+
+	return question + "\n\nHINTS:\n" + strings.Join(hints, "\n")
 }
 
 // Validate ensures the query plan is safe to execute

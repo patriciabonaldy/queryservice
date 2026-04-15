@@ -65,20 +65,20 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	plan, err := h.planner.GenerateQueryPlan(ctx, req.Question)
 	if err != nil {
 		log.Printf("Error generating query plan: %v", err)
-		h.sendErrorResponse(w, req.Question, language, "failed to understand the question: "+err.Error())
+		h.sendErrorResponse(w, http.StatusUnprocessableEntity, req.Question, language, "failed to understand the question: "+err.Error())
 		return
 	}
 
 	if err := h.planner.Validate(plan); err != nil {
 		log.Printf("Query plan validation failed: %v", err)
-		h.sendErrorResponse(w, req.Question, language, "invalid query: "+err.Error())
+		h.sendErrorResponse(w, http.StatusBadRequest, req.Question, language, "invalid query: "+err.Error())
 		return
 	}
 
 	data, err := h.executor.Execute(ctx, plan)
 	if err != nil {
 		log.Printf("Query execution error: %v", err)
-		h.sendErrorResponse(w, req.Question, language, "query execution failed: "+err.Error())
+		h.sendErrorResponse(w, http.StatusInternalServerError, req.Question, language, "query execution failed: "+err.Error())
 		return
 	}
 
@@ -149,12 +149,12 @@ func (h *Handler) sendError(w http.ResponseWriter, status int, message string) {
 	h.sendJSON(w, status, response)
 }
 
-func (h *Handler) sendErrorResponse(w http.ResponseWriter, question, language, message string) {
+func (h *Handler) sendErrorResponse(w http.ResponseWriter, status int, question, language, message string) {
 	response := planner.QueryResponse{
 		Success:  false,
 		Question: question,
 		Language: language,
 		Error:    message,
 	}
-	h.sendJSON(w, http.StatusOK, response)
+	h.sendJSON(w, status, response)
 }

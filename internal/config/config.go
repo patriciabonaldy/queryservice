@@ -26,7 +26,7 @@ func Load() *Config {
 		Port:       getEnvInt("QUERY_API_PORT", 8081),
 		DBPath:     getEnv("DB_PATH", "../whatssapBot/whatsapp_bot.db"),
 		LLMBaseURL: getEnv("LLM_BASE_URL", "http://localhost:1234"),
-		LLMModel:   getEnv("LLM_MODEL", "local-model"),
+		LLMModel:   getEnv("LLM_MODEL", "llama-3.2-3b-instruct"),
 	}
 
 	return cfg
